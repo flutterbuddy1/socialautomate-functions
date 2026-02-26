@@ -1,0 +1,11 @@
+{
+    "name": "post-publisher",
+    "version": "1.0.0",
+    "description": "Function to publish posts to Meta and X",
+    "main": "src/index.js",
+    "dependencies": {
+        "node-appwrite": "^11.0.0",
+        "axios": "^1.6.0"
+    },
+    "type": "module"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "create-brand-profile",
+  "version": "1.0.0",
+  "description": "Appwrite function to create or update a brand profile",
+  "main": "src/index.js",
+  "dependencies": {
+    "node-appwrite": "^11.0.0"
+  },
+  "type": "module"
+}

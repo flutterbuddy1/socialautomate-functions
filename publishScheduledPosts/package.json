@@ -1,0 +1,11 @@
+{
+    "name": "publish-scheduled-posts",
+    "version": "1.0.0",
+    "description": "Appwrite function to publish scheduled Instagram posts via cron",
+    "main": "src/index.js",
+    "type": "module",
+    "dependencies": {
+        "node-appwrite": "^11.0.0",
+        "axios": "^1.6.0"
+    }
+}

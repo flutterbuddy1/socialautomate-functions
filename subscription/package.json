@@ -1,0 +1,11 @@
+{
+    "name": "subscription-manager",
+    "version": "1.0.0",
+    "description": "Functions for subscription and credit management",
+    "main": "src/index.js",
+    "dependencies": {
+        "node-appwrite": "^11.0.0",
+        "crypto": "^1.0.1"
+    },
+    "type": "module"
+}
