@@ -9,40 +9,37 @@ export default async ({ req, res, log, error }) => {
 
     const databases = new Databases(client);
 
-    const DATABASE_ID = process.env.DATABASE_ID;
+    const DATABASE_ID = process.env.DATABASE_ID || '699c08a50014cc1ba505';
     const PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
     const ENDPOINT = process.env.APPWRITE_ENDPOINT;
     const ACCOUNTS_COLLECTION = 'connected_accounts';
     const POSTS_COLLECTION = 'scheduled_posts';
     const BUCKET_ID = '699ea200000d168a2f64';
 
-    /**
-     * Step 1: Create function publishInstagramPost(post)
-     */
     async function publishInstagramPost(post) {
-        log(`[Instagram] Publishing post ${post.$id}...`);
+        log(`[Instagram] Attempting post ${post.$id}...`);
 
-        // 1. Fetch connected account
-        const accounts = await databases.listDocuments(DATABASE_ID, ACCOUNTS_COLLECTION, [
-            Query.equal('userId', post.userId),
-            Query.equal('platform', 'instagram')
-        ]);
-
-        if (accounts.total === 0) {
-            throw new Error(`No connected Instagram account found for user ${post.userId}`);
+        // 1. Fetch connected account (Prefer account_id if available)
+        let account;
+        if (post.account_id) {
+            account = await databases.getDocument(DATABASE_ID, ACCOUNTS_COLLECTION, post.account_id);
+        } else {
+            const accounts = await databases.listDocuments(DATABASE_ID, ACCOUNTS_COLLECTION, [
+                Query.equal('userId', post.userId),
+                Query.equal('platform', 'instagram')
+            ]);
+            if (accounts.total === 0) throw new Error(`No connected Instagram account found for user ${post.userId}`);
+            account = accounts.documents[0];
         }
-
-        const account = accounts.documents[0];
         const accessToken = account.accessToken;
-        const instagramBusinessId = account.pageId; // User's proven field name for business id
+        const instagramBusinessId = account.pageId;
 
         if (!instagramBusinessId) {
             throw new Error('instagramBusinessId (pageId) is missing for the connected account.');
         }
 
-        // 2. Convert imageFileId to public URL
-        // From user logic: https://cloud.appwrite.io/v1/storage/buckets/BUCKET_ID/files/{imageFileId}/view?project=PROJECT_ID
-        // We use the ENDPOINT from env which should include /v1
+        // 2. Image URL
+        // IMPORTANT: Storage Bucket 699ea200000d168a2f64 MUST have "Read" permission for "All Users" (role:all)
         const imageUrl = `${ENDPOINT}/storage/buckets/${BUCKET_ID}/files/${post.imageField}/view?project=${PROJECT_ID}`;
         log(`[Instagram] Image URL: ${imageUrl}`);
 
@@ -70,45 +67,110 @@ export default async ({ req, res, log, error }) => {
 
         log(`[Instagram] Post ${post.$id} published successfully.`);
 
-        // 5. Update scheduled_posts status
+        // 5. Update status
         await databases.updateDocument(DATABASE_ID, POSTS_COLLECTION, post.$id, {
-            status: 'published'
+            status: 'published',
+            publishedAt: new Date().toISOString()
+        });
+    }
+
+    async function publishLinkedInPost(post) {
+        log(`[LinkedIn] Attempting post ${post.$id}...`);
+
+        // 1. Fetch connected account (Prefer account_id if available)
+        let account;
+        if (post.account_id) {
+            account = await databases.getDocument(DATABASE_ID, ACCOUNTS_COLLECTION, post.account_id);
+        } else {
+            const accounts = await databases.listDocuments(DATABASE_ID, ACCOUNTS_COLLECTION, [
+                Query.equal('userId', post.userId),
+                Query.equal('platform', 'linkedin')
+            ]);
+            if (accounts.total === 0) throw new Error(`No connected LinkedIn account found for user ${post.userId}`);
+            account = accounts.documents[0];
+        }
+        const accessToken = account.accessToken;
+        const linkedInUserId = account.pageId;
+
+        if (!linkedInUserId) {
+            throw new Error('linkedInUserId (pageId) is missing for the connected account.');
+        }
+
+        // 2. Publish to LinkedIn using ugcPosts API
+        const postData = {
+            author: `urn:li:person:${linkedInUserId}`,
+            lifecycleState: "PUBLISHED",
+            specificContent: {
+                "com.linkedin.ugc.ShareContent": {
+                    shareCommentary: {
+                        text: post.content
+                    },
+                    shareMediaCategory: "NONE"
+                }
+            },
+            visibility: {
+                "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+            }
+        };
+
+        await axios.post(
+            'https://api.linkedin.com/v2/ugcPosts',
+            postData,
+            {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                    'X-Restli-Protocol-Version': '2.0.0'
+                }
+            }
+        );
+
+        log(`[LinkedIn] Post ${post.$id} published successfully.`);
+
+        // 3. Update status
+        await databases.updateDocument(DATABASE_ID, POSTS_COLLECTION, post.$id, {
+            status: 'published',
+            publishedAt: new Date().toISOString()
         });
     }
 
     try {
-        log('Step 2: Starting cron function...');
+        log('Cron job started...');
         const now = new Date().toISOString();
 
-        // Query scheduled_posts where: platform = "instagram", status = "pending", scheduledAt <= current_time
         const pendingPosts = await databases.listDocuments(DATABASE_ID, POSTS_COLLECTION, [
-            Query.equal('platform', 'instagram'),
             Query.equal('status', 'pending'),
-            Query.lessThanEqual('scheduledAt', now)
+            Query.lessThanEqual('scheduledAt', now),
+            Query.or([
+                Query.equal('platform', 'instagram'),
+                Query.equal('platform', 'linkedin')
+            ])
         ]);
 
-        log(`Found ${pendingPosts.total} posts to process.`);
+        log(`Processing ${pendingPosts.total} pending posts...`);
 
-        // Loop through posts
         for (const post of pendingPosts.documents) {
             try {
-                // Call publishInstagramPost(post)
-                await publishInstagramPost(post);
+                if (post.platform === 'instagram') {
+                    await publishInstagramPost(post);
+                } else if (post.platform === 'linkedin') {
+                    await publishLinkedInPost(post);
+                }
             } catch (postErr) {
-                // Step 3: Error handling
                 const errorMsg = postErr.response ? JSON.stringify(postErr.response.data) : postErr.message;
                 error(`[Error] Post ${post.$id}: ${errorMsg}`);
 
                 await databases.updateDocument(DATABASE_ID, POSTS_COLLECTION, post.$id, {
-                    status: 'failed'
+                    status: 'failed',
+                    errorLog: errorMsg.slice(0, 1000)
                 });
             }
         }
 
-        return res.json({ success: true, processed: pendingPosts.total });
+        return res.json({ success: true, count: pendingPosts.total });
 
     } catch (err) {
-        error('Global Publisher Error: ' + err.message);
+        error('Execution Error: ' + err.message);
         return res.json({ success: false, error: err.message }, 500);
     }
 };

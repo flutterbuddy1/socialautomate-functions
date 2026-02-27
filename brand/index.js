@@ -18,7 +18,7 @@ export default async ({ req, res, log, error }) => {
 
   const DATABASE_ID = process.env.DATABASE_ID || '699c08a50014cc1ba505';
   const COLLECTION_ID = 'brand_profiles';
-  const BUCKET_ID = 'brand_logos';
+  const BUCKET_ID = '699ea200000d168a2f64';
 
   // Security Check: Ensure userId is present in headers (provided by Appwrite)
   const userId = req.headers['x-appwrite-user-id'];
@@ -27,9 +27,9 @@ export default async ({ req, res, log, error }) => {
   }
 
   try {
-    const { bussinessName, industry, targetAudience, tone, primaryColor, secondaryColor, logoFieldId, goal } = JSON.parse(req.body);
+    const { businessName, industry, targetAudience, tone, primaryColor, secondaryColor, logoFieldId, goal } = JSON.parse(req.body);
 
-    if (!bussinessName) {
+    if (!businessName) {
       return res.json({ success: false, error: 'Brand name is required' }, 400);
     }
 
@@ -41,7 +41,7 @@ export default async ({ req, res, log, error }) => {
     let profile;
     const profileData = {
       userId,
-      bussinessName,
+      businessName,
       industry,
       targetAudience,
       tone,

@@ -1,11 +1,5 @@
 import { Client, Databases, ID, Query, Functions } from 'node-appwrite';
 
-/**
- * Scheduler Functions:
- * 1. schedulePost: API to save post
- * 2. cronScheduler: Polling mechanism
- */
-
 export default async ({ req, res, log, error }) => {
     const client = new Client()
         .setEndpoint(process.env.APPWRITE_ENDPOINT)
@@ -17,7 +11,7 @@ export default async ({ req, res, log, error }) => {
 
     const DATABASE_ID = process.env.DATABASE_ID || '699c08a50014cc1ba505';
     const POSTS_COLLECTION = 'scheduled_posts';
-    const PUBLISHER_FUNCTION_ID = 'publisher_function'; // Update with actual ID
+    const PUBLISHER_FUNCTION_ID = '69a000bb000ac455334c'; // User provided Publisher ID
 
     const userId = req.headers['x-appwrite-user-id'];
 
@@ -28,14 +22,14 @@ export default async ({ req, res, log, error }) => {
         if (payload.action === 'schedule') {
             if (!userId) return res.json({ success: false, error: 'Unauthorized' }, 401);
 
-            const { content, mediaFileId, platform, scheduledFor } = payload;
+            const { content, imageField, platform, scheduledAt } = payload;
 
             const post = await databases.createDocument(DATABASE_ID, POSTS_COLLECTION, ID.unique(), {
                 userId,
                 content,
-                mediaFileId,
+                imageField, // Corrected attribute name
                 platform,
-                scheduledFor, // ISO String
+                scheduledAt, // Corrected attribute name
                 status: 'pending',
                 createdAt: new Date().toISOString()
             });
@@ -44,15 +38,14 @@ export default async ({ req, res, log, error }) => {
         }
 
         // Action 2: Cron Job Execution (Polling)
-        // This part is triggered by Appwrite Cron every 1 minute
         if (req.headers['x-appwrite-trigger'] === 'schedule') {
             log('Polling for pending posts...');
 
             const now = new Date().toISOString();
             const pendingPosts = await databases.listDocuments(DATABASE_ID, POSTS_COLLECTION, [
                 Query.equal('status', 'pending'),
-                Query.lessThanEqual('scheduledFor', now),
-                Query.limit(10) // Process in batches
+                Query.lessThanEqual('scheduledAt', now), // Corrected attribute name
+                Query.limit(10)
             ]);
 
             log(`Found ${pendingPosts.total} posts to publish`);
@@ -61,7 +54,7 @@ export default async ({ req, res, log, error }) => {
                 // Trigger the publisher function asynchronously
                 functions.createExecution(PUBLISHER_FUNCTION_ID, JSON.stringify(post), true);
 
-                // Mark as 'in-progress' to avoid double publishing
+                // Mark as 'processing' to avoid double publishing
                 await databases.updateDocument(DATABASE_ID, POSTS_COLLECTION, post.$id, {
                     status: 'processing'
                 });

@@ -1,0 +1,11 @@
+{
+    "name": "linkedin-auth",
+    "version": "1.0.0",
+    "description": "Exchanges LinkedIn OAuth code for access token and stores it in Appwrite",
+    "main": "src/index.js",
+    "type": "module",
+    "dependencies": {
+        "axios": "^1.6.2",
+        "node-appwrite": "^11.1.0"
+    }
+}

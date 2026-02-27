@@ -1,13 +1,6 @@
 import { Client, Databases, Storage, Query } from 'node-appwrite';
 import axios from 'axios';
 
-/**
- * Function 7: Publish Post
- * - Publish to Meta Graph API or X API
- * - Handle errors
- * - Update database status
- */
-
 export default async ({ req, res, log, error }) => {
     const client = new Client()
         .setEndpoint(process.env.APPWRITE_ENDPOINT)
@@ -15,78 +8,124 @@ export default async ({ req, res, log, error }) => {
         .setKey(process.env.APPWRITE_API_KEY);
 
     const databases = new Databases(client);
-    const storage = new Storage(client);
 
     const DATABASE_ID = process.env.DATABASE_ID || '699c08a50014cc1ba505';
     const ACCOUNTS_COLLECTION = 'connected_accounts';
     const POSTS_COLLECTION = 'scheduled_posts';
-    const BUCKET_ID = 'generated_images';
+    const BUCKET_ID = '699ea200000d168a2f64';
+    const PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
 
     try {
-        const post = JSON.parse(req.body);
-        const { userId, platform, content, mediaFileId, $id: postId } = post;
+        const payload = JSON.parse(req.body || '{}');
+        const { userId, platform, content, imageField, $id: postId } = payload;
 
-        // 1. Fetch OAuth Credentials for the platform
-        const accounts = await databases.listDocuments(DATABASE_ID, ACCOUNTS_COLLECTION, [
-            Query.equal('userId', userId),
-            Query.equal('platform', platform)
-        ]);
+        if (!postId) throw new Error('Post ID ($id) is missing in payload.');
 
-        if (accounts.total === 0) {
-            throw new Error(`No connected account found for ${platform}`);
+        log(`[Publisher] Processing post ${postId} for ${platform}...`);
+
+        // 1. Fetch connected account (Prefer account_id if available)
+        let account;
+        if (payload.account_id) {
+            account = await databases.getDocument(DATABASE_ID, ACCOUNTS_COLLECTION, payload.account_id);
+        } else {
+            const accounts = await databases.listDocuments(DATABASE_ID, ACCOUNTS_COLLECTION, [
+                Query.equal('userId', userId),
+                Query.equal('platform', platform)
+            ]);
+            if (accounts.total === 0) throw new Error(`No connected account found for ${platform}`);
+            account = accounts.documents[0];
+        }
+        const accessToken = account.accessToken;
+        const instagramBusinessId = account.pageId;
+
+        // 2. Prepare Media URL
+        // Bucket MUST have read("any") permission
+        const mediaUrl = `${process.env.APPWRITE_ENDPOINT}/storage/buckets/${BUCKET_ID}/files/${imageField}/view?project=${PROJECT_ID}`;
+
+        if (platform === 'instagram') {
+            if (!instagramBusinessId) throw new Error('Instagram Business ID (pageId) is missing.');
+            if (!imageField) throw new Error('Instagram requires an image.');
+
+            // Container
+            const containerRes = await axios.post(
+                `https://graph.facebook.com/v19.0/${instagramBusinessId}/media`,
+                {
+                    image_url: mediaUrl,
+                    caption: content,
+                    access_token: accessToken
+                }
+            );
+
+            const creation_id = containerRes.data.id;
+
+            // Publish
+            await axios.post(
+                `https://graph.facebook.com/v19.0/${instagramBusinessId}/media_publish`,
+                {
+                    creation_id: creation_id,
+                    access_token: accessToken
+                }
+            );
+        } else if (platform === 'linkedin') {
+            const linkedInUserId = account.pageId;
+            if (!linkedInUserId) throw new Error('LinkedIn User ID (pageId) is missing.');
+
+            const postData = {
+                author: `urn:li:person:${linkedInUserId}`,
+                lifecycleState: "PUBLISHED",
+                specificContent: {
+                    "com.linkedin.ugc.ShareContent": {
+                        shareCommentary: {
+                            text: content
+                        },
+                        shareMediaCategory: "NONE"
+                    }
+                },
+                visibility: {
+                    "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+                }
+            };
+
+            await axios.post(
+                'https://api.linkedin.com/v2/ugcPosts',
+                postData,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json',
+                        'X-Restli-Protocol-Version': '2.0.0'
+                    }
+                }
+            );
+        } else {
+            // Placeholder for other platforms
+            log(`Platform ${platform} publishing logic not implemented yet.`);
+            throw new Error(`Auto-publishing for ${platform} is not currently active.`);
         }
 
-        const { accessToken, platformUserId } = accounts.documents[0];
-
-        // 2. Fetch Media if exists
-        let mediaUrl = null;
-        if (mediaFileId) {
-            // In production, you'd generate a temporary public URL or use Storage SDK
-            mediaUrl = `${process.env.APPWRITE_ENDPOINT}/storage/buckets/${BUCKET_ID}/files/${mediaFileId}/view?project=${process.env.APPWRITE_PROJECT_ID}`;
-        }
-
-        log(`Publishing to ${platform}...`);
-
-        let publishResult;
-        if (platform === 'facebook' || platform === 'instagram') {
-            // Meta Graph API Implementation
-            const endpoint = `https://graph.facebook.com/v19.0/${platformUserId}/feed`;
-            publishResult = await axios.post(endpoint, {
-                message: content,
-                link: mediaUrl,
-                access_token: accessToken
-            });
-        } else if (platform === 'x') {
-            // X API v2 Implementation
-            publishResult = await axios.post('https://api.twitter.com/2/tweets', {
-                text: content
-            }, {
-                headers: { Authorization: `Bearer ${accessToken}` }
-            });
-        }
-
-        // 3. Update Post Status
+        // 3. Success
         await databases.updateDocument(DATABASE_ID, POSTS_COLLECTION, postId, {
             status: 'published',
-            publishedAt: new Date().toISOString(),
-            platformResponse: JSON.stringify(publishResult.data)
+            publishedAt: new Date().toISOString()
         });
 
         log(`Successfully published post ${postId}`);
         return res.json({ success: true });
 
     } catch (err) {
-        error('Publisher Error: ' + err.message);
+        const errorMsg = err.response ? JSON.stringify(err.response.data) : err.message;
+        error('Individual Publisher Error: ' + errorMsg);
 
-        // Update status to failed
-        if (req.body) {
-            const post = JSON.parse(req.body);
-            await databases.updateDocument(DATABASE_ID, POSTS_COLLECTION, post.$id, {
-                status: 'failed',
-                errorLog: err.message
-            });
-        }
+        try {
+            const payload = JSON.parse(req.body || '{}');
+            if (payload.$id) {
+                await databases.updateDocument(DATABASE_ID, POSTS_COLLECTION, payload.$id, {
+                    status: 'failed',
+                    errorLog: errorMsg.slice(0, 1000)
+                });
+            }
+        } catch (ignore) { }
 
-        return res.json({ success: false, error: err.message }, 500);
+        return res.json({ success: false, error: errorMsg }, 500);
     }
 };
