@@ -85,6 +85,7 @@ export default async ({ req, res, log, error }) => {
 
         const tokenData = tokenResponse.data;
         const accessToken = tokenData.access_token;
+        const idToken = tokenData.id_token;
         const expiresIn = tokenData.expires_in;
 
         if (!accessToken) {
@@ -93,24 +94,43 @@ export default async ({ req, res, log, error }) => {
 
         log('Access token received.');
 
-        log('Step 2: Fetching LinkedIn user info...');
-        const userResponse = await axios.get(
-            'https://api.linkedin.com/v2/userinfo',
-            {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`
-                }
+        let linkedInUserId = null;
+
+        // Try to decode id_token first to avoid REVOKED_ACCESS_TOKEN error on /userinfo
+        if (idToken) {
+            try {
+                log('Step 2: Decoding id_token for user identity...');
+                const base64Url = idToken.split('.')[1];
+                const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+                const jsonPayload = Buffer.from(base64, 'base64').toString();
+                const payload = JSON.parse(jsonPayload);
+                linkedInUserId = payload.sub;
+                log(`Success! Extracted PID from id_token: ${linkedInUserId}`);
+            } catch (decodeErr) {
+                log(`Failed to decode id_token: ${decodeErr.message}. Falling back to /userinfo...`);
             }
-        );
-
-        const userData = userResponse.data;
-        const linkedInUserId = userData.sub; // For OpenID Connect scopes
-
-        if (!linkedInUserId) {
-            throw new Error('Failed to retrieve LinkedIn User ID (sub field missing in userinfo response)');
         }
 
-        log(`Success! Found LinkedIn User: ${linkedInUserId}`);
+        if (!linkedInUserId) {
+            log('Step 2: Fetching LinkedIn user info via API...');
+            const userResponse = await axios.get(
+                'https://api.linkedin.com/v2/userinfo',
+                {
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`
+                    }
+                }
+            );
+
+            const userData = userResponse.data;
+            linkedInUserId = userData.sub; // For OpenID Connect scopes
+        }
+
+        if (!linkedInUserId) {
+            throw new Error('Failed to retrieve LinkedIn User ID (identity missing in responses)');
+        }
+
+        log(`Final LinkedIn User Identity: ${linkedInUserId}`);
 
         log('Step 3: Updating Appwrite Database...');
         const expiresAtDate = new Date();
