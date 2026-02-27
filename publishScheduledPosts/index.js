@@ -1,4 +1,4 @@
-import { Client, Databases, Query } from 'node-appwrite';
+import { Client, Databases, Query, Functions } from 'node-appwrite';
 import axios from 'axios';
 
 export default async ({ req, res, log, error }) => {
@@ -8,6 +8,7 @@ export default async ({ req, res, log, error }) => {
         .setKey(process.env.APPWRITE_API_KEY);
 
     const databases = new Databases(client);
+    const functions = new Functions(client);
 
     const DATABASE_ID = process.env.DATABASE_ID || '699c08a50014cc1ba505';
     const PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
@@ -75,59 +76,33 @@ export default async ({ req, res, log, error }) => {
     }
 
     async function publishLinkedInPost(post) {
-        log(`[LinkedIn] Attempting post ${post.$id}...`);
+        log(`[LinkedIn] Calling linkedin-post function for post ${post.$id}...`);
 
-        // 1. Fetch connected account (Prefer account_id if available)
-        let account;
-        if (post.account_id) {
-            account = await databases.getDocument(DATABASE_ID, ACCOUNTS_COLLECTION, post.account_id);
-        } else {
-            const accounts = await databases.listDocuments(DATABASE_ID, ACCOUNTS_COLLECTION, [
-                Query.equal('userId', post.userId),
-                Query.equal('platform', 'linkedin')
-            ]);
-            if (accounts.total === 0) throw new Error(`No connected LinkedIn account found for user ${post.userId}`);
-            account = accounts.documents[0];
-        }
-        const accessToken = account.accessToken;
-        const linkedInUserId = account.pageId;
+        const LINKEDIN_POST_FUNCTION_ID = process.env.LINKEDIN_POST_FUNCTION_ID || '69a14f9a0035853190b6';
 
-        if (!linkedInUserId) {
-            throw new Error('linkedInUserId (pageId) is missing for the connected account.');
-        }
+        const payload = JSON.stringify({
+            userId: post.userId,
+            content: post.content,
+            accountId: post.account_id
+        });
 
-        // 2. Publish to LinkedIn using ugcPosts API
-        const postData = {
-            author: `urn:li:person:${linkedInUserId}`,
-            lifecycleState: "PUBLISHED",
-            specificContent: {
-                "com.linkedin.ugc.ShareContent": {
-                    shareCommentary: {
-                        text: post.content
-                    },
-                    shareMediaCategory: "NONE"
-                }
-            },
-            visibility: {
-                "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
-            }
-        };
-
-        await axios.post(
-            'https://api.linkedin.com/v2/ugcPosts',
-            postData,
-            {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json',
-                    'X-Restli-Protocol-Version': '2.0.0'
-                }
-            }
+        const execution = await functions.createExecution(
+            LINKEDIN_POST_FUNCTION_ID,
+            payload
         );
 
-        log(`[LinkedIn] Post ${post.$id} published successfully.`);
+        if (execution.status !== 'completed') {
+            throw new Error(`LinkedIn function failed with status: ${execution.status}`);
+        }
 
-        // 3. Update status
+        const result = JSON.parse(execution.responseBody);
+        if (!result.success) {
+            throw new Error(result.error || 'LinkedIn post function returned failure');
+        }
+
+        log(`[LinkedIn] Post ${post.$id} published successfully via function.`);
+
+        // Update status
         await databases.updateDocument(DATABASE_ID, POSTS_COLLECTION, post.$id, {
             status: 'published',
             publishedAt: new Date().toISOString()

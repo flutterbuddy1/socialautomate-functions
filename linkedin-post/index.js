@@ -5,31 +5,45 @@ export default async ({ req, res, log, error }) => {
     log('LinkedIn Post Function triggered');
 
     // 1. Initialize Appwrite Client
-    const client = new Client()
-        .setEndpoint(process.env.APPWRITE_ENDPOINT)
-        .setProject(process.env.APPWRITE_PROJECT_ID)
-        .setKey(process.env.APPWRITE_API_KEY);
+    const client = new Client();
+
+    const endpoint = process.env.APPWRITE_ENDPOINT;
+    const projectId = process.env.APPWRITE_PROJECT_ID;
+    const apiKey = process.env.APPWRITE_API_KEY;
+
+    if (!apiKey || !endpoint || !projectId) {
+        error('Missing core Appwrite environment variables');
+        return res.json({ success: false, error: 'Internal configuration error: Appwrite variables missing' });
+    }
+
+    client
+        .setEndpoint(endpoint)
+        .setProject(projectId)
+        .setKey(apiKey);
 
     const databases = new Databases(client);
 
-    const DATABASE_ID = process.env.DATABASE_ID;
+    const DATABASE_ID = process.env.DATABASE_ID || '699c08a50014cc1ba505';
     const ACCOUNTS_COLLECTION = 'connected_accounts';
 
     // 2. Extract input parameters
     let body;
     try {
+        if (!req.body) {
+            throw new Error('Request body is empty');
+        }
         body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
         log('Received body: ' + JSON.stringify(body));
     } catch (e) {
         error('Failed to parse request body: ' + e.message);
-        return res.json({ success: false, error: 'Invalid JSON body' }, 400);
+        return res.json({ success: false, error: 'Invalid JSON body: ' + e.message });
     }
 
     const { userId, content, accountId } = body;
 
     if (!userId || !content) {
         error('Missing userId or content in request body');
-        return res.json({ success: false, error: 'userId and content are required' }, 400);
+        return res.json({ success: false, error: 'userId and content are required' });
     }
 
     try {
@@ -44,7 +58,7 @@ export default async ({ req, res, log, error }) => {
             ]);
             if (accounts.total === 0) {
                 error(`No connected LinkedIn account found for user ${userId}`);
-                return res.json({ success: false, error: 'No connected LinkedIn account found' }, 404);
+                return res.json({ success: false, error: 'No connected LinkedIn account found' });
             }
             account = accounts.documents[0];
         }
@@ -54,7 +68,7 @@ export default async ({ req, res, log, error }) => {
 
         if (!accessToken || !linkedInUserId) {
             error('LinkedIn credentials or User ID missing in account record.');
-            return res.json({ success: false, error: 'LinkedIn credentials missing' }, 400);
+            return res.json({ success: false, error: 'LinkedIn credentials missing' });
         }
 
         log(`Attempting to post for LinkedIn User: ${linkedInUserId}`);
@@ -99,6 +113,6 @@ export default async ({ req, res, log, error }) => {
     } catch (err) {
         const errorMsg = err.response ? JSON.stringify(err.response.data) : err.message;
         error('Unexpected runtime error: ' + errorMsg);
-        return res.json({ success: false, error: 'Failed to publish to LinkedIn: ' + errorMsg }, 500);
+        return res.json({ success: false, error: 'Failed to publish to LinkedIn: ' + errorMsg });
     }
 };

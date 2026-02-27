@@ -2,10 +2,10 @@
     "name": "linkedin-post",
     "version": "1.0.0",
     "description": "Publishes a post to LinkedIn",
-    "main": "src/index.js",
+    "main": "index.js",
     "type": "module",
     "dependencies": {
-        "axios": "^1.6.2",
-        "node-appwrite": "^11.1.0"
+        "axios": "^1.6.0",
+        "node-appwrite": "^11.0.0"
     }
 }

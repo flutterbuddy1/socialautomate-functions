@@ -1,4 +1,4 @@
-import { Client, Databases, Storage, Query } from 'node-appwrite';
+import { Client, Databases, Storage, Query, Functions } from 'node-appwrite';
 import axios from 'axios';
 
 export default async ({ req, res, log, error }) => {
@@ -8,6 +8,7 @@ export default async ({ req, res, log, error }) => {
         .setKey(process.env.APPWRITE_API_KEY);
 
     const databases = new Databases(client);
+    const functions = new Functions(client);
 
     const DATABASE_ID = process.env.DATABASE_ID || '699c08a50014cc1ba505';
     const ACCOUNTS_COLLECTION = 'connected_accounts';
@@ -67,36 +68,29 @@ export default async ({ req, res, log, error }) => {
                 }
             );
         } else if (platform === 'linkedin') {
-            const linkedInUserId = account.pageId;
-            if (!linkedInUserId) throw new Error('LinkedIn User ID (pageId) is missing.');
+            log(`[Publisher] Calling linkedin-post function for post ${postId}...`);
 
-            const postData = {
-                author: `urn:li:person:${linkedInUserId}`,
-                lifecycleState: "PUBLISHED",
-                specificContent: {
-                    "com.linkedin.ugc.ShareContent": {
-                        shareCommentary: {
-                            text: content
-                        },
-                        shareMediaCategory: "NONE"
-                    }
-                },
-                visibility: {
-                    "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
-                }
-            };
+            const LINKEDIN_POST_FUNCTION_ID = process.env.LINKEDIN_POST_FUNCTION_ID || '69a14f9a0035853190b6';
 
-            await axios.post(
-                'https://api.linkedin.com/v2/ugcPosts',
-                postData,
-                {
-                    headers: {
-                        'Authorization': `Bearer ${accessToken}`,
-                        'Content-Type': 'application/json',
-                        'X-Restli-Protocol-Version': '2.0.0'
-                    }
-                }
+            const payload = JSON.stringify({
+                userId: userId,
+                content: content,
+                accountId: payload.account_id
+            });
+
+            const execution = await functions.createExecution(
+                LINKEDIN_POST_FUNCTION_ID,
+                payload
             );
+
+            if (execution.status !== 'completed') {
+                throw new Error(`LinkedIn function failed with status: ${execution.status}`);
+            }
+
+            const result = JSON.parse(execution.responseBody);
+            if (!result.success) {
+                throw new Error(result.error || 'LinkedIn post function returned failure');
+            }
         } else {
             // Placeholder for other platforms
             log(`Platform ${platform} publishing logic not implemented yet.`);

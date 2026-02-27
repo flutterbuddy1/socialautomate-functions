@@ -5,68 +5,77 @@ export default async ({ req, res, log, error }) => {
     log('LinkedIn Auth Function triggered');
 
     // 1. Initialize Appwrite Client
-    const client = new Client()
-        .setEndpoint(process.env.APPWRITE_ENDPOINT)
-        .setProject(process.env.APPWRITE_PROJECT_ID)
-        .setKey(process.env.APPWRITE_API_KEY);
+    const client = new Client();
+
+    // Safely get env variables
+    const endpoint = process.env.APPWRITE_ENDPOINT;
+    const projectId = process.env.APPWRITE_PROJECT_ID;
+    const apiKey = process.env.APPWRITE_API_KEY;
+
+    if (!apiKey || !endpoint || !projectId) {
+        const msg = 'Missing core Appwrite environment variables (API_KEY, ENDPOINT, or PROJECT_ID)';
+        error(msg);
+        return res.json({ success: false, error: msg }, 500);
+    }
+
+    client
+        .setEndpoint(endpoint)
+        .setProject(projectId)
+        .setKey(apiKey);
 
     const databases = new Databases(client);
 
-    const DATABASE_ID = process.env.DATABASE_ID;
+    const DATABASE_ID = process.env.DATABASE_ID || '699c08a50014cc1ba505';
     const COLLECTION_ID = 'connected_accounts';
 
-    // 2. Validate Environment Variables
+    // 2. Validate LinkedIn Environment Variables
     const clientId = process.env.LINKEDIN_CLIENT_ID;
     const clientSecret = process.env.LINKEDIN_CLIENT_SECRET;
 
-    if (!process.env.APPWRITE_API_KEY) {
-        error('Missing APPWRITE_API_KEY environment variable');
-        return res.json({ success: false, error: 'Internal configuration error: API Key missing' }, 500);
-    }
-
     if (!clientId || !clientSecret) {
-        error('Missing LINKEDIN_CLIENT_ID or LINKEDIN_CLIENT_SECRET environment variables');
-        return res.json({ success: false, error: 'Internal configuration error: LinkedIn credentials missing' }, 500);
-    }
-
-    if (!DATABASE_ID) {
-        error('Missing DATABASE_ID environment variable');
-        return res.json({ success: false, error: 'Internal configuration error: Database ID missing' }, 500);
+        const msg = 'Missing LINKEDIN_CLIENT_ID or LINKEDIN_CLIENT_SECRET environment variables';
+        error(msg);
+        return res.json({ success: false, error: msg }, 500);
     }
 
     // 3. Extract input parameters
     let body;
     try {
+        if (!req.body) {
+            throw new Error('Request body is empty');
+        }
         body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
         log('Received body: ' + JSON.stringify(body));
     } catch (e) {
-        error('Failed to parse request body: ' + e.message);
-        return res.json({ success: false, error: 'Invalid JSON body' }, 400);
+        const msg = 'Failed to parse request body: ' + e.message;
+        error(msg);
+        return res.json({ success: false, error: msg }, 400);
     }
 
     const { code, userId, redirectUri } = body;
 
     if (!code || !userId) {
-        error('Missing code or userId in request body');
-        return res.json({ success: false, error: 'code and userId are required' }, 400);
+        const msg = 'code and userId are required in the request body';
+        error(msg);
+        return res.json({ success: false, error: msg }, 400);
     }
 
     const effectiveRedirectUri = redirectUri || process.env.LINKEDIN_REDIRECT_URI || 'http://localhost:5173/linkedin/callback';
+    log('Effective Redirect URI: ' + effectiveRedirectUri);
 
     try {
         log('Step 1: Exchanging code for access token...');
 
-        // LinkedIn expects application/x-www-form-urlencoded
-        const params = new URLSearchParams();
-        params.append('grant_type', 'authorization_code');
-        params.append('code', code);
-        params.append('client_id', clientId);
-        params.append('client_secret', clientSecret);
-        params.append('redirect_uri', effectiveRedirectUri);
+        const tokenParams = new URLSearchParams();
+        tokenParams.append('grant_type', 'authorization_code');
+        tokenParams.append('code', code);
+        tokenParams.append('client_id', clientId);
+        tokenParams.append('client_secret', clientSecret);
+        tokenParams.append('redirect_uri', effectiveRedirectUri);
 
         const tokenResponse = await axios.post(
             'https://www.linkedin.com/oauth/v2/accessToken',
-            params.toString(),
+            tokenParams.toString(),
             {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded'
@@ -77,6 +86,10 @@ export default async ({ req, res, log, error }) => {
         const tokenData = tokenResponse.data;
         const accessToken = tokenData.access_token;
         const expiresIn = tokenData.expires_in;
+
+        if (!accessToken) {
+            throw new Error('AccessToken not found in LinkedIn response');
+        }
 
         log('Access token received.');
 
@@ -94,8 +107,7 @@ export default async ({ req, res, log, error }) => {
         const linkedInUserId = userData.sub; // For OpenID Connect scopes
 
         if (!linkedInUserId) {
-            error('Failed to retrieve LinkedIn User ID (sub).');
-            return res.json({ success: false, error: 'Failed to retrieve LinkedIn account identity.' }, 400);
+            throw new Error('Failed to retrieve LinkedIn User ID (sub field missing in userinfo response)');
         }
 
         log(`Success! Found LinkedIn User: ${linkedInUserId}`);
@@ -113,8 +125,8 @@ export default async ({ req, res, log, error }) => {
             userId: userId,
             platform: 'linkedin',
             accessToken: accessToken,
-            refreshToken: '', // LinkedIn authorization_code flow doesn't always provide refresh_token unless specifically requested/configured
-            pageId: linkedInUserId, // Using pageId field for the account identity URN
+            refreshToken: tokenData.refresh_token || '',
+            pageId: linkedInUserId,
             expiresAt: expiresAtDate.toISOString()
         };
 
@@ -149,11 +161,29 @@ export default async ({ req, res, log, error }) => {
                 accountId: result.$id,
                 linkedInUserId: linkedInUserId
             }
-        });
+        }, 200);
 
     } catch (err) {
-        const errorMsg = err.response ? JSON.stringify(err.response.data) : err.message;
+        // Robust error extraction
+        let errorMsg = err.message;
+        let statusCode = 500;
+
+        if (err.response) {
+            // Axios error with response from server
+            statusCode = err.response.status || 500;
+            const data = err.response.data;
+            errorMsg = (data && typeof data === 'object')
+                ? JSON.stringify(data)
+                : (data || err.message);
+        } else if (err.request) {
+            // Axios error where request was made but no response received
+            errorMsg = 'No response received from LinkedIn API';
+        }
+
         error('Unexpected runtime error: ' + errorMsg);
-        return res.json({ success: false, error: 'An internal server error occurred: ' + errorMsg }, 500);
+        return res.json({
+            success: false,
+            error: 'LinkedIn Auth Error: ' + errorMsg
+        }, statusCode);
     }
 };
