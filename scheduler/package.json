@@ -2,7 +2,7 @@
     "name": "post-scheduler",
     "version": "1.0.0",
     "description": "Functions for scheduling and cron management",
-    "main": "src/index.js",
+    "main": "src/main.js",
     "dependencies": {
         "node-appwrite": "^11.0.0"
     },

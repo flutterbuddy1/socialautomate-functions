@@ -83,7 +83,8 @@ export default async ({ req, res, log, error }) => {
         const payload = JSON.stringify({
             userId: post.userId,
             content: post.content,
-            accountId: post.account_id
+            accountId: post.account_id,
+            imageField: post.imageField
         });
 
         const execution = await functions.createExecution(

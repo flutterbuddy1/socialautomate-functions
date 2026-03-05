@@ -2,7 +2,7 @@
     "name": "connect-social-account",
     "version": "1.0.0",
     "description": "Appwrite function to store social media OAuth tokens",
-    "main": "src/index.js",
+    "main": "src/main.js",
     "dependencies": {
         "node-appwrite": "^11.0.0"
     },
