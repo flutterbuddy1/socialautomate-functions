@@ -1,0 +1,11 @@
+{
+    "name": "exchange-facebook-token",
+    "version": "1.0.0",
+    "description": "Appwrite function to exchange Meta OAuth code for Facebook long-lived Page token",
+    "main": "index.js",
+    "dependencies": {
+        "node-appwrite": "^11.0.0",
+        "axios": "^1.6.0"
+    },
+    "type": "module"
+}

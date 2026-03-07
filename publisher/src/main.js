@@ -91,6 +91,19 @@ export default async ({ req, res, log, error }) => {
             if (!result.success) {
                 throw new Error(result.error || 'LinkedIn post function returned failure');
             }
+        } else if (platform === 'facebook') {
+            log(`[Publisher] Posting to Facebook Page ${instagramBusinessId}...`);
+            // Note: pageId is stored in pageId field (which we mapped from instagramBusinessId earlier in the code)
+            
+            const facebookRes = await axios.post(
+                `https://graph.facebook.com/v19.0/${instagramBusinessId}/feed`,
+                {
+                    message: content,
+                    access_token: accessToken
+                }
+            );
+
+            log(`[Publisher] Facebook post success: ${facebookRes.data.id}`);
         } else {
             // Placeholder for other platforms
             log(`Platform ${platform} publishing logic not implemented yet.`);
