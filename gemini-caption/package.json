@@ -1,0 +1,11 @@
+{
+  "name": "gemini-caption",
+  "version": "1.0.0",
+  "description": "Appwrite function to generate social media captions using Google Gemini API",
+  "main": "index.js",
+  "type": "module",
+  "dependencies": {
+    "node-appwrite": "^11.0.0",
+    "@google/generative-ai": "^0.2.0"
+  }
+}
