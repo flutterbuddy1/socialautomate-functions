@@ -1,8 +1,19 @@
 import { Client } from 'node-appwrite';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import fetch, { Headers, Request, Response } from 'node-fetch';
+
+// Robust polyfill for environments without built-in fetch (Node < 18)
+if (!globalThis.fetch) {
+    globalThis.fetch = fetch;
+    globalThis.Headers = Headers;
+    globalThis.Request = Request;
+    globalThis.Response = Response;
+}
 
 export default async ({ req, res, log, error }) => {
     log('Gemini Caption Generator started');
+    log('Node Version: ' + process.version);
+    log('Native fetch present: ' + (typeof globalThis.fetch !== 'undefined'));
 
     try {
         // 1. Validate Environment Variables
@@ -22,16 +33,26 @@ export default async ({ req, res, log, error }) => {
             return res.json({ success: false, error: 'Invalid JSON request body' }, 400);
         }
 
-        const { businessName, industry, tone, targetAudience, platform } = body;
+        const { businessName, bussinessName, industry, tone, targetAudience, platform, topic } = body;
 
-        if (!businessName || !industry || !tone || !targetAudience || !platform) {
-            error('Missing required fields in request body');
-            return res.json({ success: false, error: 'businessName, industry, tone, targetAudience, and platform are required' }, 400);
+        // Use either spelling of business name to be safe
+        const actualBusinessName = businessName || bussinessName;
+
+        const missing = [];
+        if (!actualBusinessName) missing.push('businessName');
+        if (!industry) missing.push('industry');
+        if (!tone) missing.push('tone');
+        if (!targetAudience) missing.push('targetAudience');
+        if (!platform) missing.push('platform');
+
+        if (missing.length > 0) {
+            error('Missing fields: ' + missing.join(', '));
+            return res.json({ success: false, error: `Missing required brand data: ${missing.join(', ')}. Please check your Brand Profile in Onboarding.` }, 400);
         }
 
         // 3. Initialize Gemini
         const genAI = new GoogleGenerativeAI(geminiApiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
 
         // 4. Construct Prompt
         const prompt = `
@@ -43,6 +64,7 @@ export default async ({ req, res, log, error }) => {
             Tone: ${tone}
             Target Audience: ${targetAudience}
             Platform: ${platform}
+            Topic/Context: ${topic || 'General brand update and engagement'}
 
             Instructions:
             - Write a catchy hook in the first line
@@ -65,18 +87,39 @@ export default async ({ req, res, log, error }) => {
         const text = response.text();
         log('Gemini response received.');
 
-        // 5. Parse Response
-        // We expect a format like "Caption: ... Hashtags: ..."
-        const captionMatch = text.match(/Caption:([\s\S]*?)Hashtags:/i);
-        const hashtagsMatch = text.match(/Hashtags:([\s\S]*)/i);
+        // 5. Parse Response - More Robustly
+        log('Raw AI Text: ' + text);
 
-        const caption = captionMatch ? captionMatch[1].trim() : '';
-        const hashtagsRaw = hashtagsMatch ? hashtagsMatch[1].trim() : '';
-        const hashtags = hashtagsRaw.split(/\s+/).filter(tag => tag.startsWith('#'));
+        let caption = '';
+        let hashtags = [];
+
+        // Regular regex for "Caption: ... Hashtags: ..."
+        const captionMatch = text.match(/Caption:?([\s\S]*?)(?:Hashtags:?|$)/i);
+        const hashtagsMatch = text.match(/Hashtags:?([\s\S]*)/i);
+
+        if (captionMatch && captionMatch[1].trim()) {
+            caption = captionMatch[1].trim();
+        }
+
+        if (hashtagsMatch && hashtagsMatch[1].trim()) {
+            const rawHashtags = hashtagsMatch[1].trim();
+            hashtags = rawHashtags.split(/\s+/).filter(tag => tag.startsWith('#'));
+        }
+
+        // Fallback: If no Caption header but the text is solid, use the whole text but strip hashtags
+        if (!caption && text.length > 50) {
+            log('Note: Caption header missing, attempting fallback extraction');
+            // Remove hashtags from the main text for the caption part
+            caption = text.replace(/#\w+/g, '').trim();
+            // If hashtags list is still empty, grab them from the text
+            if (hashtags.length === 0) {
+                hashtags = text.match(/#\w+/g) || [];
+            }
+        }
 
         if (!caption) {
-            error('Failed to parse caption from Gemini response: ' + text);
-            throw new Error('Could not parse valid caption from AI response');
+            error('Failed to extract caption from Gemini response. Raw text: ' + text);
+            return res.json({ success: false, error: 'AI generated a response but it was in an invalid format. Please try again.' }, 500);
         }
 
         return res.json({
@@ -89,8 +132,8 @@ export default async ({ req, res, log, error }) => {
 
     } catch (err) {
         error('Runtime Exception: ' + err.message);
-        return res.json({ 
-            success: false, 
+        return res.json({
+            success: false,
             error: 'AI generation failed: ' + err.message
         }, 500);
     }
