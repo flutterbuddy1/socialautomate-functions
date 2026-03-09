@@ -4,8 +4,7 @@
     "description": "Functions for subscription and credit management",
     "main": "src/main.js",
     "dependencies": {
-        "node-appwrite": "^11.0.0",
-        "crypto": "^1.0.1"
+        "node-appwrite": "^11.0.0"
     },
     "type": "module"
 }
