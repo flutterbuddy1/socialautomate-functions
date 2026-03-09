@@ -63,10 +63,10 @@ export default async ({ req, res, log, error }) => {
             // 1. Check Credits
             const subResults = await databases.listDocuments(DATABASE_ID, SUB_COLLECTION, [
                 Query.equal('userId', userId),
-                Query.equal('status', 'active')
+                Query.equal('isActive', "true")
             ]);
 
-            if (subResults.total === 0 || subResults.documents[0].imageCreditsRemaining <= 0) {
+            if (subResults.total === 0 || parseInt(subResults.documents[0].imageCreditsRemaining) <= 0) {
                 return res.json({ success: false, error: 'Insufficient image credits' }, 403);
             }
 
@@ -92,7 +92,7 @@ export default async ({ req, res, log, error }) => {
 
             // 4. Deduct Credit
             await databases.updateDocument(DATABASE_ID, SUB_COLLECTION, subscription.$id, {
-                imageCreditsRemaining: subscription.imageCreditsRemaining - 1
+                imageCreditsRemaining: (parseInt(subscription.imageCreditsRemaining) - 1).toString()
             });
 
             return res.json({ success: true, data: { fileId: file.$id, url: imageUrl } });

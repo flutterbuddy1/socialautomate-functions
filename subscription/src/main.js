@@ -20,7 +20,7 @@ export default async ({ req, res, log, error }) => {
     try {
         // Action 1: Razorpay Webhook
         if (req.headers['x-razorpay-signature']) {
-            const secret = process.env.RAZORPAY_SECRET;
+            const secret = process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_KEY_SECRET;
             const signature = req.headers['x-razorpay-signature'];
             const body = req.body;
 
@@ -30,61 +30,110 @@ export default async ({ req, res, log, error }) => {
                 .digest('hex');
 
             if (expectedSignature !== signature) {
+                error('Signature mismatch');
                 return res.json({ success: false, error: 'Invalid signature' }, 400);
             }
 
             const event = JSON.parse(body);
             log(`Received Razorpay event: ${event.event}`);
 
-            if (event.event === 'subscription.activated' || event.event === 'payment.captured') {
-                const userId = event.payload.payment.entity.notes.userId; // Ensure userId is passed in notes
-                const plan = event.payload.payment.entity.notes.plan || 'pro';
+            const validEvents = ['subscription.activated', 'payment.captured', 'order.paid'];
+            if (validEvents.includes(event.event)) {
+                // Determine source entity
+                const entity = event.payload.payment?.entity || event.payload.order?.entity || event.payload.subscription?.entity;
+                
+                if (!entity || !entity.notes || !entity.notes.userId) {
+                    error('No userId found in payment notes');
+                    return res.json({ success: false, error: 'Missing userId in notes' }, 400);
+                }
+
+                const userId = entity.notes.userId;
+                const plan = entity.notes.plan || 'monthly';
 
                 // Find or create subscription
                 const existing = await databases.listDocuments(DATABASE_ID, SUB_COLLECTION, [
                     Query.equal('userId', userId)
                 ]);
 
+                const now = new Date();
+                let endDate = null;
+                if (plan === 'free_trial') {
+                    endDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+                } else if (plan === 'monthly') {
+                    endDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+                } else if (plan === '6_months') {
+                    endDate = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000).toISOString();
+                } else if (plan === 'yearly') {
+                    endDate = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString();
+                }
+
                 const subData = {
                     userId,
-                    status: 'active',
+                    isActive: "true",
                     plan,
-                    imageCreditsRemaining: plan === 'pro' ? 100 : 20, // Example credit limits
-                    updatedAt: new Date().toISOString()
+                    imageCreditsRemaining: (['monthly', '6_months', 'yearly'].includes(plan) ? 5 : 3).toString(),
+                    startDate: now.toISOString(),
+                    lastCreditReset: now.toISOString(),
+                    endDate: endDate,
                 };
 
                 if (existing.total > 0) {
+                    log(`Updating existing subscription ${existing.documents[0].$id}`);
                     await databases.updateDocument(DATABASE_ID, SUB_COLLECTION, existing.documents[0].$id, subData);
                 } else {
-                    await databases.createDocument(DATABASE_ID, SUB_COLLECTION, ID.unique(), {
-                        ...subData,
-                        createdAt: new Date().toISOString()
-                    });
+                    log('Creating new subscription document');
+                    await databases.createDocument(DATABASE_ID, SUB_COLLECTION, ID.unique(), subData);
                 }
+                log('Subscription updated successfully');
+            } else {
+                log(`Ignored event: ${event.event}`);
             }
 
             return res.json({ success: true });
         }
 
-        // Action 2: Credit Reset Cron
-        if (req.headers['x-appwrite-trigger'] === 'schedule' && req.headers['x-appwrite-event'] === 'daily_reset') {
-            log('Running daily credit reset...');
+        // Action 2: Credit Reset & Trial Expiry Cron
+        if (req.headers['x-appwrite-trigger'] === 'schedule') {
+            log('Running subscription maintenance cron...');
 
             let cursor = null;
             let documents = [];
 
             do {
-                const queries = [Query.equal('status', 'active'), Query.limit(100)];
+                const queries = [Query.equal('isActive', "true"), Query.limit(100)];
                 if (cursor) queries.push(Query.after(cursor));
 
                 const response = await databases.listDocuments(DATABASE_ID, SUB_COLLECTION, queries);
                 documents = response.documents;
 
                 for (const doc of documents) {
-                    const resetCredits = doc.plan === 'pro' ? 10 : 2; // Daily bonus example
-                    await databases.updateDocument(DATABASE_ID, SUB_COLLECTION, doc.$id, {
-                        imageCreditsRemaining: doc.imageCreditsRemaining + resetCredits
-                    });
+                    const now = new Date();
+
+                    // 1. Check Trial Expiry
+                    if (doc.plan === 'free_trial' && doc.endDate) {
+                        const expiry = new Date(doc.endDate);
+                        if (now > expiry) {
+                            log(`Expiring trial for user ${doc.userId}`);
+                            await databases.updateDocument(DATABASE_ID, SUB_COLLECTION, doc.$id, {
+                                isActive: "false"
+                            });
+                            continue;
+                        }
+                    }
+
+                    // 2. Daily Reset for Paid Plans
+                    if (['monthly', '6_months', 'yearly'].includes(doc.plan) && doc.isActive === "true") {
+                        const lastReset = new Date(doc.lastCreditReset || doc.startDate);
+                        
+                        // Check if a day has passed
+                        if (now.getDate() !== lastReset.getDate() || now.getMonth() !== lastReset.getMonth() || now.getFullYear() !== lastReset.getFullYear()) {
+                            log(`Daily credit reset for user ${doc.userId} (${doc.plan})`);
+                            await databases.updateDocument(DATABASE_ID, SUB_COLLECTION, doc.$id, {
+                                imageCreditsRemaining: "5",
+                                lastCreditReset: now.toISOString()
+                            });
+                        }
+                    }
                 }
 
                 if (documents.length > 0) {
